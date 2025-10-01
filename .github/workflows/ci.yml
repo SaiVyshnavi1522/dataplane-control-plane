@@ -28,10 +28,13 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '3.20.3'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate protobuf API
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
           make proto
