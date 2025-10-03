@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/example/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
 )
 
 type Mock struct{}

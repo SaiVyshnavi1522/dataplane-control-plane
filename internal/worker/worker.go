@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/example/dataplane-control-plane/internal/metrics"
-	"github.com/example/dataplane-control-plane/internal/service"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/metrics"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/service"
 )
 
 type Worker struct {
@@ -32,6 +32,8 @@ func (w *Worker) Run(ctx context.Context) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			metrics.ActiveWorkers.Inc()
+			defer metrics.ActiveWorkers.Dec()
 			w.loop(ctx, id)
 		}(i + 1)
 	}
@@ -70,6 +72,9 @@ func (w *Worker) processOne(ctx context.Context, workerID int) error {
 		return nil
 	}
 	metrics.JobsProcessed.WithLabelValues(string(outcome.Job.Type), "error").Inc()
+	if outcome.Retry {
+		metrics.JobRetries.WithLabelValues(string(outcome.Job.Type)).Inc()
+	}
 	slog.Warn("job failed", "worker", workerID, "job", outcome.Job.ID, "type", outcome.Job.Type, "attempt", outcome.Job.Attempts, "retry", outcome.Retry, "error", outcome.Cause)
 	return nil
 }

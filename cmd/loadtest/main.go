@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ func main() {
 	base := flag.String("url", "http://localhost:8080", "API base URL")
 	total := flag.Int("n", 100, "requests")
 	concurrency := flag.Int("c", 10, "concurrency")
+	apiKey := flag.String("api-key", os.Getenv("ADMIN_API_KEY"), "Bearer API key (or ADMIN_API_KEY)")
 	flag.Parse()
 
 	jobs := make(chan int)
@@ -33,6 +35,7 @@ func main() {
 				req, _ := http.NewRequest(http.MethodPost, *base+"/v1/clusters", bytes.NewReader(body))
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Idempotency-Key", fmt.Sprintf("performance-%d-%d", time.Now().UnixNano(), i))
+				req.Header.Set("Authorization", "Bearer "+*apiKey)
 				t0 := time.Now()
 				resp, err := client.Do(req)
 				latencies <- time.Since(t0)

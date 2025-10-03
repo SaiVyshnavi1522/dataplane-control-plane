@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/example/dataplane-control-plane/internal/model"
-	"github.com/example/dataplane-control-plane/internal/repository"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/repository"
 )
 
 type storeStub struct {

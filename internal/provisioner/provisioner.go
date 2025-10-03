@@ -3,7 +3,7 @@ package provisioner
 import (
 	"context"
 
-	"github.com/example/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
 )
 
 type Provisioner interface {

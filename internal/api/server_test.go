@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/dataplane-control-plane/internal/model"
-	"github.com/example/dataplane-control-plane/internal/service"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/service"
 )
 
 type serviceStub struct {

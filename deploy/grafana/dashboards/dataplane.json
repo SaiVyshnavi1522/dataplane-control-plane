@@ -1,11 +1,17 @@
 {
   "title": "DataPlane Control Plane",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
   "panels": [
     {"type":"timeseries","title":"HTTP Request Rate","targets":[{"expr":"sum(rate(dataplane_http_requests_total[1m])) by (route)"}],"gridPos":{"x":0,"y":0,"w":12,"h":8}},
     {"type":"timeseries","title":"P95 API Latency","targets":[{"expr":"histogram_quantile(0.95, sum(rate(dataplane_http_request_duration_seconds_bucket[5m])) by (le, route))"}],"gridPos":{"x":12,"y":0,"w":12,"h":8}},
-    {"type":"timeseries","title":"Jobs by Outcome","targets":[{"expr":"sum(rate(dataplane_jobs_processed_total[5m])) by (type, outcome)"}],"gridPos":{"x":0,"y":8,"w":24,"h":8}}
+    {"type":"timeseries","title":"Jobs by Outcome","targets":[{"expr":"sum(rate(dataplane_jobs_processed_total[5m])) by (type, outcome)"}],"gridPos":{"x":0,"y":8,"w":12,"h":8}},
+    {"type":"timeseries","title":"Job P95 Duration","targets":[{"expr":"histogram_quantile(0.95, sum(rate(dataplane_job_duration_seconds_bucket[5m])) by (le, type))"}],"gridPos":{"x":12,"y":8,"w":12,"h":8}},
+    {"type":"stat","title":"Active Workers","targets":[{"expr":"dataplane_active_workers"}],"gridPos":{"x":0,"y":16,"w":6,"h":5}},
+    {"type":"stat","title":"HTTP In Flight","targets":[{"expr":"dataplane_http_in_flight_requests"}],"gridPos":{"x":6,"y":16,"w":6,"h":5}},
+    {"type":"timeseries","title":"Job Retry Rate","targets":[{"expr":"sum(rate(dataplane_job_retries_total[5m])) by (type)"}],"gridPos":{"x":12,"y":16,"w":12,"h":5}},
+    {"type":"timeseries","title":"gRPC Request Rate","targets":[{"expr":"sum(rate(dataplane_grpc_requests_total[5m])) by (method, code)"}],"gridPos":{"x":0,"y":21,"w":12,"h":8}},
+    {"type":"timeseries","title":"gRPC P95 Latency","targets":[{"expr":"histogram_quantile(0.95, sum(rate(dataplane_grpc_request_duration_seconds_bucket[5m])) by (le, method))"}],"gridPos":{"x":12,"y":21,"w":12,"h":8}}
   ]
 }

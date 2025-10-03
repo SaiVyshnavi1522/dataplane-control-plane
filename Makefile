@@ -1,7 +1,13 @@
-.PHONY: fmt test test-integration vet build run compose-up compose-down kind-create kind-delete run-k8s verify-local verify-retries loadtest
+.PHONY: fmt proto test test-integration vet build run compose-up compose-down kind-create kind-delete kind-verify run-k8s verify-local verify-retries verify-backup verify-security benchmark-load benchmark-recovery loadtest
 
 fmt:
 	go fmt ./...
+
+proto:
+	protoc -I api/proto \
+		--go_out=. --go_opt=module=github.com/SaiVyshnavi1522/dataplane-control-plane \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/SaiVyshnavi1522/dataplane-control-plane \
+		api/proto/dataplane/v1/clusters.proto
 
 test:
 	go test ./...
@@ -16,7 +22,7 @@ build:
 	go build ./...
 
 run:
-	PROVISIONER=mock go run ./cmd/api
+	API_KEYS="$${API_KEYS:-local-admin:admin:local-admin-key-change-me}" PROVISIONER=mock go run ./cmd/api
 
 compose-up:
 	docker compose up --build -d
@@ -30,8 +36,11 @@ kind-create:
 kind-delete:
 	kind delete cluster --name dataplane
 
+kind-verify:
+	bash scripts/verify-kind.sh
+
 run-k8s:
-	PROVISIONER=kubernetes go run ./cmd/api
+	API_KEYS="$${API_KEYS:-local-admin:admin:local-admin-key-change-me}" PROVISIONER=kubernetes go run ./cmd/api
 
 verify-local:
 	bash scripts/verify-local.sh
@@ -39,5 +48,17 @@ verify-local:
 verify-retries:
 	bash scripts/verify-retries.sh
 
+verify-backup:
+	bash scripts/verify-backup.sh
+
+verify-security:
+	bash scripts/verify-security.sh
+
+benchmark-load:
+	bash scripts/benchmark-load.sh
+
+benchmark-recovery:
+	bash scripts/benchmark-recovery.sh
+
 loadtest:
-	go run ./cmd/loadtest -n 200 -c 20
+	ADMIN_API_KEY="$${ADMIN_API_KEY:-local-admin-key-change-me}" go run ./cmd/loadtest -n 200 -c 20

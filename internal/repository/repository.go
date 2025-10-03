@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
 )
 
 const createClusterOperation = "CREATE_CLUSTER"
@@ -196,6 +196,158 @@ func (r *Repository) RequestDelete(ctx context.Context, id string) (model.Cluste
 	return cluster, nil
 }
 
+func (r *Repository) CreateBackup(ctx context.Context, clusterID, backupID, snapshotName string) (model.Backup, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Backup{}, fmt.Errorf("begin backup request: %w", err)
+	}
+	defer tx.Rollback()
+	cluster, err := getClusterForUpdate(ctx, tx, clusterID)
+	if err != nil {
+		return model.Backup{}, err
+	}
+	if cluster.Status != model.StatusRunning {
+		return model.Backup{}, invalidTransition("back up", cluster.Status)
+	}
+	row := tx.QueryRowContext(ctx, `
+		INSERT INTO backups(id,cluster_id,snapshot_name,status)
+		VALUES ($1,$2,$3,$4)
+		RETURNING id,cluster_id,snapshot_name,status,last_error,created_at,updated_at`,
+		backupID, clusterID, snapshotName, model.BackupRequested)
+	backup, err := scanBackup(row)
+	if err != nil {
+		return model.Backup{}, fmt.Errorf("insert backup: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(cluster_id,backup_id,job_type) VALUES ($1,$2,$3)`, clusterID, backupID, model.JobBackup); err != nil {
+		return model.Backup{}, fmt.Errorf("enqueue backup job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Backup{}, fmt.Errorf("commit backup request: %w", err)
+	}
+	return backup, nil
+}
+
+func (r *Repository) ListBackups(ctx context.Context, clusterID string) ([]model.Backup, error) {
+	if _, err := r.GetCluster(ctx, clusterID); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id,cluster_id,snapshot_name,status,last_error,created_at,updated_at
+		FROM backups WHERE cluster_id=$1 ORDER BY created_at DESC LIMIT 100`, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	backups := make([]model.Backup, 0)
+	for rows.Next() {
+		backup, err := scanBackup(rows)
+		if err != nil {
+			return nil, err
+		}
+		backups = append(backups, backup)
+	}
+	return backups, rows.Err()
+}
+
+func (r *Repository) GetBackup(ctx context.Context, id string) (model.Backup, error) {
+	return scanBackup(r.db.QueryRowContext(ctx, `
+		SELECT id,cluster_id,snapshot_name,status,last_error,created_at,updated_at
+		FROM backups WHERE id=$1`, id))
+}
+
+func (r *Repository) RequestRestore(ctx context.Context, clusterID, backupID string) (model.Backup, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Backup{}, fmt.Errorf("begin restore request: %w", err)
+	}
+	defer tx.Rollback()
+	cluster, err := getClusterForUpdate(ctx, tx, clusterID)
+	if err != nil {
+		return model.Backup{}, err
+	}
+	if cluster.Status != model.StatusRunning {
+		return model.Backup{}, invalidTransition("restore", cluster.Status)
+	}
+	row := tx.QueryRowContext(ctx, `
+		UPDATE backups SET status=$3,last_error='',updated_at=NOW()
+		WHERE id=$1 AND cluster_id=$2 AND status IN ($4,$5)
+		RETURNING id,cluster_id,snapshot_name,status,last_error,created_at,updated_at`,
+		backupID, clusterID, model.BackupRestoring, model.BackupAvailable, model.BackupRestored)
+	backup, err := scanBackup(row)
+	if errors.Is(err, ErrNotFound) {
+		return model.Backup{}, fmt.Errorf("%w: backup is missing or not restorable", ErrInvalidTransition)
+	}
+	if err != nil {
+		return model.Backup{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs(cluster_id,backup_id,job_type) VALUES ($1,$2,$3)`, clusterID, backupID, model.JobRestore); err != nil {
+		return model.Backup{}, fmt.Errorf("enqueue restore job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Backup{}, fmt.Errorf("commit restore request: %w", err)
+	}
+	return backup, nil
+}
+
+func (r *Repository) TransitionBackupStatus(ctx context.Context, id string, from, to model.BackupStatus, lastError string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE backups SET status=$3,last_error=$4,updated_at=NOW()
+		WHERE id=$1 AND status=$2`, id, from, to, lastError)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("%w: backup %s is not %s", ErrInvalidTransition, id, from)
+	}
+	return nil
+}
+
+func (r *Repository) RecordAudit(ctx context.Context, event model.AuditEvent) error {
+	details, err := json.Marshal(event.Details)
+	if err != nil {
+		return fmt.Errorf("encode audit details: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO audit_events(request_id,actor,role,action,resource_type,resource_id,outcome,details)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+		event.RequestID, event.Actor, event.Role, event.Action, event.ResourceType, event.ResourceID, event.Outcome, details)
+	if err != nil {
+		return fmt.Errorf("record audit event: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListAuditEvents(ctx context.Context, limit int) ([]model.AuditEvent, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id,request_id,actor,role,action,resource_type,resource_id,outcome,details,created_at
+		FROM audit_events ORDER BY created_at DESC,id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list audit events: %w", err)
+	}
+	defer rows.Close()
+	events := make([]model.AuditEvent, 0)
+	for rows.Next() {
+		var event model.AuditEvent
+		var details []byte
+		if err := rows.Scan(&event.ID, &event.RequestID, &event.Actor, &event.Role, &event.Action,
+			&event.ResourceType, &event.ResourceID, &event.Outcome, &details, &event.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan audit event: %w", err)
+		}
+		if err := json.Unmarshal(details, &event.Details); err != nil {
+			return nil, fmt.Errorf("decode audit details: %w", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit events: %w", err)
+	}
+	return events, nil
+}
+
 func (r *Repository) TransitionClusterStatus(ctx context.Context, id string, from, to model.ClusterStatus, lastError string) error {
 	if !model.CanTransition(from, to) {
 		return fmt.Errorf("%w: %s to %s is not defined", ErrInvalidTransition, from, to)
@@ -231,7 +383,7 @@ func (r *Repository) ClaimJob(ctx context.Context) (model.Job, error) {
 	}
 	defer tx.Rollback()
 	row := tx.QueryRowContext(ctx, `
-		SELECT id,cluster_id,job_type,attempts
+		SELECT id,cluster_id,job_type,attempts,COALESCE(backup_id,'')
 		FROM jobs
 		WHERE (status='PENDING' AND available_at <= NOW())
 		   OR (status='RUNNING' AND locked_at < NOW() - INTERVAL '10 minutes')
@@ -239,7 +391,7 @@ func (r *Repository) ClaimJob(ctx context.Context) (model.Job, error) {
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`)
 	var j model.Job
-	if err := row.Scan(&j.ID, &j.ClusterID, &j.Type, &j.Attempts); err != nil {
+	if err := row.Scan(&j.ID, &j.ClusterID, &j.Type, &j.Attempts, &j.BackupID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Job{}, ErrNotFound
 		}
@@ -371,4 +523,15 @@ func scanCluster(s scanner) (model.Cluster, error) {
 		return model.Cluster{}, fmt.Errorf("scan cluster: %w", err)
 	}
 	return c, nil
+}
+
+func scanBackup(s scanner) (model.Backup, error) {
+	var backup model.Backup
+	if err := s.Scan(&backup.ID, &backup.ClusterID, &backup.SnapshotName, &backup.Status, &backup.LastError, &backup.CreatedAt, &backup.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Backup{}, ErrNotFound
+		}
+		return model.Backup{}, fmt.Errorf("scan backup: %w", err)
+	}
+	return backup, nil
 }

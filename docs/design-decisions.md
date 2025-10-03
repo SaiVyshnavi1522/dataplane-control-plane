@@ -33,3 +33,23 @@ REST, background workers, and future gRPC handlers call one application service.
 ## ADR-008: At-least-once work with cancellation release
 
 Lifecycle work is at-least-once. Claims have a stale-worker lease, provisioner operations are reconciling/idempotent, and retry updates require the job to still be `RUNNING`. A graceful shutdown immediately returns canceled work to `PENDING`, clears its lock, and does not consume an attempt. This avoids both ten-minute restart delays and false terminal failures caused by routine deployments.
+
+## ADR-009: PVC-backed, ownership-safe Kubernetes reconciliation
+
+Every OpenSearch replica receives a `ReadWriteOnce` claim from the StatefulSet template. Storage size and class are configurable, scaled-down claims are retained, and cluster deletion removes managed claims after the StatefulSet terminates. Reconciliation repairs mutable Service and pod-template drift but refuses to adopt resources without matching controller and cluster ownership labels. Immutable storage-template drift is surfaced for a controlled migration instead of being silently ignored.
+
+## ADR-010: Protobuf-first gRPC transport
+
+The versioned `dataplane.v1.ClusterService` contract generates both client and server bindings. gRPC handlers call the same application service as REST and translate domain errors to canonical status codes. Reflection supports local discovery, the standard health protocol supports orchestration, and shutdown drains in-flight RPCs within the process shutdown deadline. CI regenerates bindings and rejects drift.
+
+## ADR-011: Native OpenSearch snapshots over S3-compatible storage
+
+Backup and restore remain durable lifecycle jobs and use OpenSearch's repository-s3 plugin instead of copying data through the control plane. Repository base paths are isolated by cluster ID, backup transitions are compare-and-set updates, and restore renames indices to prevent accidental overwrite. MinIO makes the full flow locally reproducible while the adapter remains compatible with S3 endpoints.
+
+## ADR-012: Transport-level RBAC with durable audits
+
+REST middleware and a gRPC interceptor share bearer authentication, `admin`/`viewer` authorization, request-ID propagation, and audit recording. Credentials are validated at startup, retained only as SHA-256 hashes, and compared in constant time. This demonstrates the security boundary without coupling the application service to one identity provider; a deployed service would replace static keys with workload identity or OIDC.
+
+## ADR-013: Vendor-neutral tracing and metrics-first alerting
+
+OpenTelemetry provides W3C propagation and OTLP export so trace storage can change without rewriting business code. Prometheus remains the alerting source because counters, gauges, and histograms support stable SLO queries. The local stack provisions Jaeger, Prometheus rules, and Grafana dashboards as code.

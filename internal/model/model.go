@@ -55,6 +55,8 @@ const (
 	JobProvision JobType = "PROVISION"
 	JobScale     JobType = "SCALE"
 	JobDelete    JobType = "DELETE"
+	JobBackup    JobType = "BACKUP"
+	JobRestore   JobType = "RESTORE"
 )
 
 type Job struct {
@@ -62,4 +64,39 @@ type Job struct {
 	ClusterID string
 	Type      JobType
 	Attempts  int
+	BackupID  string
+}
+
+type BackupStatus string
+
+const (
+	BackupRequested BackupStatus = "REQUESTED"
+	BackupCreating  BackupStatus = "CREATING"
+	BackupAvailable BackupStatus = "AVAILABLE"
+	BackupRestoring BackupStatus = "RESTORING"
+	BackupRestored  BackupStatus = "RESTORED"
+	BackupFailed    BackupStatus = "FAILED"
+)
+
+type Backup struct {
+	ID           string       `json:"id"`
+	ClusterID    string       `json:"cluster_id"`
+	SnapshotName string       `json:"snapshot_name"`
+	Status       BackupStatus `json:"status"`
+	LastError    string       `json:"last_error,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+}
+
+type AuditEvent struct {
+	ID           int64          `json:"id"`
+	RequestID    string         `json:"request_id"`
+	Actor        string         `json:"actor"`
+	Role         string         `json:"role"`
+	Action       string         `json:"action"`
+	ResourceType string         `json:"resource_type"`
+	ResourceID   string         `json:"resource_id"`
+	Outcome      string         `json:"outcome"`
+	Details      map[string]any `json:"details"`
+	CreatedAt    time.Time      `json:"created_at"`
 }

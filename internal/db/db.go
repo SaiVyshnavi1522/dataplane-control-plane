@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example/dataplane-control-plane/migrations"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/migrations"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

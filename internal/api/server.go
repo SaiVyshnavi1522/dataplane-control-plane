@@ -11,15 +11,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/example/dataplane-control-plane/internal/metrics"
-	"github.com/example/dataplane-control-plane/internal/model"
-	"github.com/example/dataplane-control-plane/internal/service"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/auth"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/metrics"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/service"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Server struct {
 	service ClusterService
 	mux     *http.ServeMux
+	auth    *auth.Authorizer
 }
 
 type ClusterService interface {
@@ -29,6 +32,9 @@ type ClusterService interface {
 	GetCluster(context.Context, string) (model.Cluster, error)
 	ScaleCluster(context.Context, string, int) (model.Cluster, error)
 	DeleteCluster(context.Context, string) (model.Cluster, error)
+	CreateBackup(context.Context, string) (model.Backup, error)
+	ListBackups(context.Context, string) ([]model.Backup, error)
+	RestoreBackup(context.Context, string, string) (model.Backup, error)
 }
 
 type createClusterRequest struct {
@@ -42,13 +48,19 @@ type scaleRequest struct {
 	Nodes int `json:"nodes"`
 }
 
-func New(application ClusterService) *Server {
-	s := &Server{service: application, mux: http.NewServeMux()}
+func New(application ClusterService, authorizers ...*auth.Authorizer) *Server {
+	authorizer := auth.AllowAll()
+	if len(authorizers) > 0 {
+		authorizer = authorizers[0]
+	}
+	s := &Server{service: application, mux: http.NewServeMux(), auth: authorizer}
 	s.routes()
 	return s
 }
 
-func (s *Server) Handler() http.Handler { return recoverMiddleware(metricsMiddleware(s.mux)) }
+func (s *Server) Handler() http.Handler {
+	return recoverMiddleware(metricsMiddleware(otelhttp.NewHandler(s.auth.HTTP(s.mux), "http.server")))
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -61,6 +73,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/clusters/{id}", s.getCluster)
 	s.mux.HandleFunc("POST /v1/clusters/{id}/scale", s.scaleCluster)
 	s.mux.HandleFunc("DELETE /v1/clusters/{id}", s.deleteCluster)
+	s.mux.HandleFunc("POST /v1/clusters/{id}/backups", s.createBackup)
+	s.mux.HandleFunc("GET /v1/clusters/{id}/backups", s.listBackups)
+	s.mux.HandleFunc("POST /v1/clusters/{id}/backups/{backup_id}/restore", s.restoreBackup)
+	s.mux.HandleFunc("GET /v1/audit-events", s.listAuditEvents)
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +199,78 @@ func (s *Server) deleteCluster(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, cluster)
 }
 
+func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
+	backup, err := s.service.CreateBackup(r.Context(), r.PathValue("id"))
+	if writeBackupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusAccepted, backup)
+}
+
+func (s *Server) listBackups(w http.ResponseWriter, r *http.Request) {
+	backups, err := s.service.ListBackups(r.Context(), r.PathValue("id"))
+	if writeBackupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": backups})
+}
+
+func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	backup, err := s.service.RestoreBackup(r.Context(), r.PathValue("id"), r.PathValue("backup_id"))
+	if writeBackupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusAccepted, backup)
+}
+
+func writeBackupError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, service.ErrInvalidArgument):
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+	case errors.Is(err, service.ErrNotFound):
+		writeError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "cluster or backup not found")
+	case errors.Is(err, service.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "OPERATION_CONFLICT", "cluster or backup state does not allow this operation")
+	default:
+		slog.Error("backup operation", "error", err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "backup operation failed")
+	}
+	return true
+}
+
+func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be a number between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	lister, ok := s.service.(interface {
+		ListAuditEvents(context.Context, int) ([]model.AuditEvent, error)
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "audit event storage is unavailable")
+		return
+	}
+	events, err := lister.ListAuditEvents(r.Context(), limit)
+	if errors.Is(err, service.ErrInvalidArgument) {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if err != nil {
+		slog.Error("list audit events", "error", err)
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not list audit events")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": events})
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
@@ -216,18 +304,25 @@ func (r *statusRecorder) WriteHeader(code int) { r.status = code; r.ResponseWrit
 
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metrics.HTTPInFlight.Inc()
+		defer metrics.HTTPInFlight.Dec()
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
 		route := normalizedRoute(r)
-		metrics.HTTPRequests.WithLabelValues(r.Method, route, strconv.Itoa(recorder.status)).Inc()
-		metrics.HTTPDuration.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
+		metrics.ObserveHTTP(r.Method, route, recorder.status, time.Since(start))
 	})
 }
 
 func normalizedRoute(r *http.Request) string {
 	p := r.URL.Path
 	if strings.HasPrefix(p, "/v1/clusters/") {
+		if strings.Contains(p, "/backups/") && strings.HasSuffix(p, "/restore") {
+			return "/v1/clusters/{id}/backups/{backup_id}/restore"
+		}
+		if strings.HasSuffix(p, "/backups") {
+			return "/v1/clusters/{id}/backups"
+		}
 		if strings.HasSuffix(p, "/scale") {
 			return "/v1/clusters/{id}/scale"
 		}

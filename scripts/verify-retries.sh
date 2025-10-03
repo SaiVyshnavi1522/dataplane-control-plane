@@ -2,6 +2,7 @@
 set -euo pipefail
 
 BASE_URL=${BASE_URL:-http://localhost:8080}
+ADMIN_API_KEY=${ADMIN_API_KEY:-local-admin-key-change-me}
 IDEMPOTENCY_KEY="retry-verification-$(date +%s)-$$"
 CLUSTER_NAME="reliability-search"
 
@@ -11,7 +12,7 @@ restore_api() {
 trap restore_api EXIT
 
 cluster_status() {
-  curl -fsS "$BASE_URL/v1/clusters/$1" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p'
+  curl -fsS -H "Authorization: Bearer $ADMIN_API_KEY" "$BASE_URL/v1/clusters/$1" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p'
 }
 
 wait_for_status() {
@@ -52,7 +53,7 @@ assert_attempts() {
 printf 'Starting API with two injected failures per lifecycle operation\n'
 FAILURE_INJECTION_ATTEMPTS=2 docker compose up -d --force-recreate api >/dev/null
 for ((attempt = 1; attempt <= 30; attempt++)); do
-  if curl -fsS "$BASE_URL/readyz" >/dev/null; then
+  if curl -fsS "$BASE_URL/readyz" >/dev/null 2>&1; then
     break
   fi
   sleep 1
@@ -60,6 +61,7 @@ done
 curl -fsS "$BASE_URL/readyz" >/dev/null
 
 response=$(curl -fsS -X POST "$BASE_URL/v1/clusters" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H 'Content-Type: application/json' \
   -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
   -d "{\"name\":\"$CLUSTER_NAME\",\"nodes\":1}")
@@ -72,11 +74,12 @@ wait_for_status "$cluster_id" RUNNING
 assert_attempts "$cluster_id" PROVISION
 
 curl -fsS -X POST "$BASE_URL/v1/clusters/$cluster_id/scale" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H 'Content-Type: application/json' -d '{"nodes":2}' >/dev/null
 wait_for_status "$cluster_id" RUNNING
 assert_attempts "$cluster_id" SCALE
 
-curl -fsS -X DELETE "$BASE_URL/v1/clusters/$cluster_id" >/dev/null
+curl -fsS -X DELETE -H "Authorization: Bearer $ADMIN_API_KEY" "$BASE_URL/v1/clusters/$cluster_id" >/dev/null
 wait_for_status "$cluster_id" DELETED
 assert_attempts "$cluster_id" DELETE
 

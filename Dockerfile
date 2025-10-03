@@ -7,6 +7,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/datapla
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/dataplane /dataplane
-EXPOSE 8080
+EXPOSE 8080 9091
 USER nonroot:nonroot
 ENTRYPOINT ["/dataplane"]

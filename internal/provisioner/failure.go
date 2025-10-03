@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/example/dataplane-control-plane/internal/model"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
 )
 
 var ErrInjectedFailure = errors.New("injected provisioner failure")

@@ -4,4 +4,4 @@
 .DS_Store
 coverage.out
 bin/
-dataplane
+/dataplane

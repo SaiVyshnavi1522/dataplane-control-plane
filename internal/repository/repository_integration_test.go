@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	appdb "github.com/example/dataplane-control-plane/internal/db"
-	"github.com/example/dataplane-control-plane/internal/model"
+	appdb "github.com/SaiVyshnavi1522/dataplane-control-plane/internal/db"
+	"github.com/SaiVyshnavi1522/dataplane-control-plane/internal/model"
 )
 
 func TestCreateClusterReplayUsesOriginalRequestAfterScaling(t *testing.T) {
@@ -328,6 +328,82 @@ func TestReleaseJobMakesCanceledWorkImmediatelyClaimable(t *testing.T) {
 	}
 	if reclaimed.ID != claimed.ID || reclaimed.Attempts != 1 {
 		t.Fatalf("reclaimed job=%+v, want id=%d attempts=1", reclaimed, claimed.ID)
+	}
+}
+
+func TestBackupAndRestoreRequestsCreateDurableJobs(t *testing.T) {
+	repo, sqlDB := openRepositoryDatabase(t)
+	ctx := context.Background()
+	cluster, _, err := repo.CreateCluster(ctx, CreateClusterInput{
+		ID:             "01JARCHIVESEARCH00000000001",
+		Name:           "archive-search",
+		Engine:         "opensearch",
+		Version:        "3.8.0",
+		DesiredNodes:   1,
+		IdempotencyKey: "create-archive-search-2026-09",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeProvisioning(t, repo, cluster.ID)
+	backup, err := repo.CreateBackup(ctx, cluster.ID, "01JARCHIVEBACKUP00000000001", "snapshot-archive-primary")
+	if err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+	job, err := repo.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("claim backup job: %v", err)
+	}
+	if job.Type != model.JobBackup || job.BackupID != backup.ID {
+		t.Fatalf("backup job=%+v", job)
+	}
+	if err := repo.TransitionBackupStatus(ctx, backup.ID, model.BackupRequested, model.BackupCreating, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.TransitionBackupStatus(ctx, backup.ID, model.BackupCreating, model.BackupAvailable, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CompleteJob(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	restoring, err := repo.RequestRestore(ctx, cluster.ID, backup.ID)
+	if err != nil {
+		t.Fatalf("request restore: %v", err)
+	}
+	if restoring.Status != model.BackupRestoring {
+		t.Fatalf("backup state=%s, want RESTORING", restoring.Status)
+	}
+	restoreJob, err := repo.ClaimJob(ctx)
+	if err != nil {
+		t.Fatalf("claim restore job: %v", err)
+	}
+	if restoreJob.Type != model.JobRestore || restoreJob.BackupID != backup.ID {
+		t.Fatalf("restore job=%+v", restoreJob)
+	}
+	assertRowCount(t, sqlDB, "backups", 1)
+	assertRowCount(t, sqlDB, "jobs", 3)
+}
+
+func TestAuditEventsAreDurableAndReturnedNewestFirst(t *testing.T) {
+	repo, _ := openRepositoryDatabase(t)
+	ctx := context.Background()
+	for _, event := range []model.AuditEvent{
+		{RequestID: "request-security-0001", Actor: "anonymous", Role: "none", Action: "HTTP_GET", ResourceType: "http_path", ResourceID: "/v1/clusters", Outcome: "FAILURE", Details: map[string]any{"status_code": 401}},
+		{RequestID: "request-security-0002", Actor: "operations-admin", Role: "admin", Action: "HTTP_POST", ResourceType: "http_path", ResourceID: "/v1/clusters", Outcome: "SUCCESS", Details: map[string]any{"status_code": 202}},
+	} {
+		if err := repo.RecordAudit(ctx, event); err != nil {
+			t.Fatalf("record audit event: %v", err)
+		}
+	}
+	events, err := repo.ListAuditEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 2 || events[0].RequestID != "request-security-0002" || events[1].RequestID != "request-security-0001" {
+		t.Fatalf("audit events=%+v", events)
+	}
+	if events[0].Details["status_code"] != float64(202) {
+		t.Fatalf("audit details=%+v", events[0].Details)
 	}
 }
 
