@@ -23,6 +23,7 @@ services:
       DATABASE_URL: postgres://dataplane:dataplane@postgres:5432/dataplane?sslmode=disable
       PROVISIONER: mock
       WORKERS: 4
+      FAILURE_INJECTION_ATTEMPTS: ${FAILURE_INJECTION_ATTEMPTS:-0}
     ports:
       - "8080:8080"
     depends_on:

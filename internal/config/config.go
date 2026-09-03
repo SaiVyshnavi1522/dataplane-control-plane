@@ -16,6 +16,8 @@ type Config struct {
 	OpenSearchImage string
 	Workers         int
 	JobPollInterval time.Duration
+	WorkerShutdown  time.Duration
+	FailureAttempts int
 }
 
 func Load() (Config, error) {
@@ -28,12 +30,26 @@ func Load() (Config, error) {
 		OpenSearchImage: env("OPENSEARCH_IMAGE", "opensearchproject/opensearch:3.8.0"),
 		Workers:         envInt("WORKERS", 4),
 		JobPollInterval: envDuration("JOB_POLL_INTERVAL", time.Second),
+		WorkerShutdown:  envDuration("WORKER_SHUTDOWN_TIMEOUT", 10*time.Second),
+		FailureAttempts: envInt("FAILURE_INJECTION_ATTEMPTS", 0),
 	}
 	if cfg.Workers < 1 || cfg.Workers > 32 {
 		return Config{}, fmt.Errorf("WORKERS must be between 1 and 32")
 	}
 	if cfg.Provisioner != "mock" && cfg.Provisioner != "kubernetes" {
 		return Config{}, fmt.Errorf("PROVISIONER must be mock or kubernetes")
+	}
+	if cfg.JobPollInterval <= 0 {
+		return Config{}, fmt.Errorf("JOB_POLL_INTERVAL must be greater than zero")
+	}
+	if cfg.WorkerShutdown <= 0 || cfg.WorkerShutdown > time.Minute {
+		return Config{}, fmt.Errorf("WORKER_SHUTDOWN_TIMEOUT must be greater than zero and at most 1m")
+	}
+	if cfg.FailureAttempts < 0 || cfg.FailureAttempts > 10 {
+		return Config{}, fmt.Errorf("FAILURE_INJECTION_ATTEMPTS must be between 0 and 10")
+	}
+	if cfg.FailureAttempts > 0 && cfg.Provisioner != "mock" {
+		return Config{}, fmt.Errorf("FAILURE_INJECTION_ATTEMPTS is allowed only with the mock provisioner")
 	}
 	return cfg, nil
 }

@@ -29,3 +29,7 @@ Allowed transitions are explicit in the domain model. Repository updates use exp
 ## ADR-007: Transport-neutral application service
 
 REST, background workers, and future gRPC handlers call one application service. The service owns request normalization, validation, lifecycle use cases, job execution, and provisioner coordination. HTTP code is limited to decoding, status-code mapping, and encoding; worker code is limited to polling, concurrency, and telemetry. This prevents protocol-specific business rules and makes the core use cases independently verifiable.
+
+## ADR-008: At-least-once work with cancellation release
+
+Lifecycle work is at-least-once. Claims have a stale-worker lease, provisioner operations are reconciling/idempotent, and retry updates require the job to still be `RUNNING`. A graceful shutdown immediately returns canceled work to `PENDING`, clears its lock, and does not consume an attempt. This avoids both ten-minute restart delays and false terminal failures caused by routine deployments.

@@ -288,6 +288,49 @@ func TestTransitionClusterStatusRejectsStaleSourceState(t *testing.T) {
 	}
 }
 
+func TestReleaseJobMakesCanceledWorkImmediatelyClaimable(t *testing.T) {
+	repo, sqlDB := openRepositoryDatabase(t)
+	cluster, _, err := repo.CreateCluster(context.Background(), CreateClusterInput{
+		ID:             "01JREPORTSSEARCH00000000001",
+		Name:           "reports-search",
+		Engine:         "opensearch",
+		Version:        "3.8.0",
+		DesiredNodes:   1,
+		IdempotencyKey: "create-reports-search-2026-09",
+	})
+	if err != nil {
+		t.Fatalf("create cluster: %v", err)
+	}
+	claimed, err := repo.ClaimJob(context.Background())
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if claimed.ClusterID != cluster.ID || claimed.Attempts != 1 {
+		t.Fatalf("claimed job=%+v", claimed)
+	}
+	if err := repo.ReleaseJob(context.Background(), claimed, context.Canceled); err != nil {
+		t.Fatalf("release job: %v", err)
+	}
+
+	var status string
+	var attempts int
+	var lockedAt sql.NullTime
+	if err := sqlDB.QueryRow(`SELECT status,attempts,locked_at FROM jobs WHERE id=$1`, claimed.ID).Scan(&status, &attempts, &lockedAt); err != nil {
+		t.Fatalf("inspect released job: %v", err)
+	}
+	if status != "PENDING" || attempts != 0 || lockedAt.Valid {
+		t.Fatalf("released job status=%s attempts=%d locked_at=%v", status, attempts, lockedAt)
+	}
+
+	reclaimed, err := repo.ClaimJob(context.Background())
+	if err != nil {
+		t.Fatalf("reclaim job: %v", err)
+	}
+	if reclaimed.ID != claimed.ID || reclaimed.Attempts != 1 {
+		t.Fatalf("reclaimed job=%+v, want id=%d attempts=1", reclaimed, claimed.ID)
+	}
+}
+
 func openRepositoryDatabase(t *testing.T) (*Repository, *sql.DB) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")

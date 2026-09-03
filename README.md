@@ -13,6 +13,7 @@ The repository demonstrates software-engineering behaviors that are difficult to
 - concurrent Go workers
 - durable job claiming with PostgreSQL `FOR UPDATE SKIP LOCKED`
 - retry/backoff and timeouts
+- deterministic failure injection and graceful worker cancellation
 - explicit lifecycle state machines
 - Kubernetes API integration with `client-go`
 - stateful-service provisioning
@@ -69,6 +70,14 @@ Then open:
 - Grafana: `http://localhost:3000` (`admin` / `admin`)
 
 Docker Compose uses **mock provisioning** so the entire API/job/observability path runs without Kubernetes.
+
+Exercise real retry and recovery behavior by failing the first two attempts of every lifecycle operation:
+
+```bash
+make verify-retries
+```
+
+The verification checks persisted attempt counts for provision, scale, and delete, then restores failure injection to zero.
 
 To stop the stack while preserving PostgreSQL data:
 
@@ -157,7 +166,7 @@ internal/api            REST handlers + middleware
 internal/service        transport-neutral application use cases
 internal/repository     PostgreSQL lifecycle + job persistence
 internal/worker         concurrent worker pool + retries
-internal/provisioner    mock and Kubernetes implementations
+internal/provisioner    mock, fault-injection, and Kubernetes implementations
 internal/metrics        Prometheus metrics
 migrations              schema
 deploy                   Kind, Prometheus, Grafana, RBAC

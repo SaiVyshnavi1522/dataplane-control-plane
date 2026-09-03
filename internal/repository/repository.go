@@ -256,18 +256,53 @@ func (r *Repository) ClaimJob(ctx context.Context) (model.Job, error) {
 }
 
 func (r *Repository) CompleteJob(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET status='SUCCEEDED',updated_at=NOW() WHERE id=$1`, id)
-	return err
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET status='SUCCEEDED',locked_at=NULL,updated_at=NOW() WHERE id=$1 AND status='RUNNING'`, id)
+	if err != nil {
+		return err
+	}
+	return requireAffectedJob(result, id, "complete")
 }
 
 func (r *Repository) RetryOrFailJob(ctx context.Context, job model.Job, cause error, maxAttempts int) (bool, error) {
 	if job.Attempts >= maxAttempts {
-		_, err := r.db.ExecContext(ctx, `UPDATE jobs SET status='FAILED',last_error=$2,updated_at=NOW() WHERE id=$1`, job.ID, cause.Error())
-		return false, err
+		result, err := r.db.ExecContext(ctx, `UPDATE jobs SET status='FAILED',locked_at=NULL,last_error=$2,updated_at=NOW() WHERE id=$1 AND status='RUNNING'`, job.ID, cause.Error())
+		if err != nil {
+			return false, err
+		}
+		return false, requireAffectedJob(result, job.ID, "fail")
 	}
 	backoff := time.Duration(1<<(job.Attempts-1)) * time.Second
-	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET status='PENDING',available_at=NOW()+($2::int * INTERVAL '1 second'),last_error=$3,updated_at=NOW() WHERE id=$1`, job.ID, int(backoff.Seconds()), cause.Error())
-	return true, err
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET status='PENDING',locked_at=NULL,available_at=NOW()+($2::int * INTERVAL '1 second'),last_error=$3,updated_at=NOW() WHERE id=$1 AND status='RUNNING'`, job.ID, int(backoff.Seconds()), cause.Error())
+	if err != nil {
+		return false, err
+	}
+	return true, requireAffectedJob(result, job.ID, "retry")
+}
+
+// ReleaseJob returns interrupted work to the queue immediately. The canceled
+// claim does not consume an attempt because the operation did not get a fair
+// chance to complete before process shutdown.
+func (r *Repository) ReleaseJob(ctx context.Context, job model.Job, cause error) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE jobs
+		SET status='PENDING',attempts=GREATEST(attempts-1,0),locked_at=NULL,
+		    available_at=NOW(),last_error=$2,updated_at=NOW()
+		WHERE id=$1 AND status='RUNNING'`, job.ID, cause.Error())
+	if err != nil {
+		return err
+	}
+	return requireAffectedJob(result, job.ID, "release")
+}
+
+func requireAffectedJob(result sql.Result, id int64, operation string) error {
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read %s job result: %w", operation, err)
+	}
+	if count == 0 {
+		return fmt.Errorf("%w: cannot %s job %d because it is not running", ErrInvalidTransition, operation, id)
+	}
+	return nil
 }
 
 func getByIdempotencyKey(ctx context.Context, q queryer, key string) (model.Cluster, string, createClusterPayload, error) {

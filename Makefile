@@ -1,4 +1,4 @@
-.PHONY: fmt test test-integration vet build run compose-up compose-down kind-create kind-delete run-k8s verify-local loadtest
+.PHONY: fmt test test-integration vet build run compose-up compose-down kind-create kind-delete run-k8s verify-local verify-retries loadtest
 
 fmt:
 	go fmt ./...
@@ -35,6 +35,9 @@ run-k8s:
 
 verify-local:
 	bash scripts/verify-local.sh
+
+verify-retries:
+	bash scripts/verify-retries.sh
 
 loadtest:
 	go run ./cmd/loadtest -n 200 -c 20

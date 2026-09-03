@@ -64,6 +64,11 @@ func (w *Worker) processOne(ctx context.Context, workerID int) error {
 		metrics.JobsProcessed.WithLabelValues(string(outcome.Job.Type), "success").Inc()
 		return nil
 	}
+	if outcome.Released {
+		metrics.JobsProcessed.WithLabelValues(string(outcome.Job.Type), "canceled").Inc()
+		slog.Info("job released during shutdown", "worker", workerID, "job", outcome.Job.ID, "type", outcome.Job.Type)
+		return nil
+	}
 	metrics.JobsProcessed.WithLabelValues(string(outcome.Job.Type), "error").Inc()
 	slog.Warn("job failed", "worker", workerID, "job", outcome.Job.ID, "type", outcome.Job.Type, "attempt", outcome.Job.Attempts, "retry", outcome.Retry, "error", outcome.Cause)
 	return nil

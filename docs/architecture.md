@@ -32,6 +32,8 @@ flowchart LR
 6. Failed jobs use exponential backoff and retry up to three times before cluster state becomes `FAILED`.
 7. In Kubernetes mode the provisioner reconciles a headless Service and OpenSearch StatefulSet and waits for all requested replicas to become ready.
 
+When shutdown cancels an in-flight operation, the service releases its job back to `PENDING` with no attempt consumed. The process waits for worker cleanup within a configured deadline. A stale-process safety net also makes `RUNNING` jobs claimable after their lease expires.
+
 ## Application boundary
 
 REST handlers translate HTTP into application inputs and map application errors back to stable API responses. The application service owns validation, normalization, lifecycle commands, durable job execution, and coordination with the provisioner. Workers only provide concurrency and polling. This transport-neutral boundary is designed to be reused by the planned gRPC server so behavior cannot drift between protocols.
@@ -46,3 +48,4 @@ The domain package defines the allowed state-transition graph. Worker updates us
 - StatefulSet data uses `emptyDir` so Kind works without a storage provisioner. Production evolution is a StorageClass/PVC design.
 - PostgreSQL is used as both metadata store and durable work queue to keep the MVP small while still demonstrating transactional job creation and concurrent consumers.
 - Scale is intentionally limited to 1-3 nodes for laptop resource safety.
+- Deterministic failure injection is restricted to mock mode and disabled by default.

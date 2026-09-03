@@ -50,6 +50,7 @@ type Store interface {
 	ClaimJob(context.Context) (model.Job, error)
 	CompleteJob(context.Context, int64) error
 	RetryOrFailJob(context.Context, model.Job, error, int) (bool, error)
+	ReleaseJob(context.Context, model.Job, error) error
 }
 
 type Service struct {
@@ -70,6 +71,7 @@ type JobOutcome struct {
 	Job       model.Job
 	StartedAt time.Time
 	Retry     bool
+	Released  bool
 	Cause     error
 }
 
@@ -151,6 +153,15 @@ func (s *Service) ProcessNextJob(ctx context.Context, maxAttempts int) (JobOutco
 	}
 
 	outcome.Cause = operationErr
+	if ctx.Err() != nil && errors.Is(operationErr, context.Canceled) {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.store.ReleaseJob(releaseCtx, job, operationErr); err != nil {
+			return outcome, fmt.Errorf("release canceled job %d: %w", job.ID, err)
+		}
+		outcome.Released = true
+		return outcome, nil
+	}
 	retry, err := s.store.RetryOrFailJob(ctx, job, operationErr, maxAttempts)
 	if err != nil {
 		return outcome, fmt.Errorf("record failure for job %d: %w", job.ID, err)

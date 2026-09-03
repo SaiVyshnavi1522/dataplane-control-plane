@@ -52,11 +52,16 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	prov = provisioner.NewFailureInjector(prov, cfg.FailureAttempts)
 
 	metrics.Register()
 	application := service.New(repo, prov)
 	workers := worker.New(application, cfg.Workers, cfg.JobPollInterval)
-	go workers.Run(ctx)
+	workersDone := make(chan struct{})
+	go func() {
+		defer close(workersDone)
+		workers.Run(ctx)
+	}()
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -77,6 +82,14 @@ func main() {
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("HTTP shutdown", "error", err)
+	}
+	select {
+	case <-workersDone:
+		slog.Info("workers stopped")
+	case <-time.After(cfg.WorkerShutdown):
+		slog.Error("worker shutdown timed out", "timeout", cfg.WorkerShutdown)
+	}
 	slog.Info("shutdown complete")
 }
