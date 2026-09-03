@@ -3,14 +3,16 @@
 ```mermaid
 flowchart LR
     C[CLI / Client] -->|REST| API[Go Control Plane API]
-    API --> PG[(PostgreSQL)]
-    API -->|enqueue| J[(jobs table)]
+    API --> APP[Application Service]
+    APP --> PG[(PostgreSQL)]
+    APP -->|enqueue| J[(jobs table)]
     W1[Worker 1] -->|SKIP LOCKED| J
     W2[Worker 2] -->|SKIP LOCKED| J
     W3[Worker N] -->|SKIP LOCKED| J
-    W1 --> P[Provisioner Interface]
-    W2 --> P
-    W3 --> P
+    W1 --> APP
+    W2 --> APP
+    W3 --> APP
+    APP --> P[Provisioner Interface]
     P -->|mock mode| M[Local simulation]
     P -->|kubernetes mode| K[Kubernetes API]
     K --> STS[OpenSearch StatefulSet]
@@ -29,6 +31,10 @@ flowchart LR
 5. Provisioning changes cluster state `REQUESTED -> PROVISIONING -> RUNNING`.
 6. Failed jobs use exponential backoff and retry up to three times before cluster state becomes `FAILED`.
 7. In Kubernetes mode the provisioner reconciles a headless Service and OpenSearch StatefulSet and waits for all requested replicas to become ready.
+
+## Application boundary
+
+REST handlers translate HTTP into application inputs and map application errors back to stable API responses. The application service owns validation, normalization, lifecycle commands, durable job execution, and coordination with the provisioner. Workers only provide concurrency and polling. This transport-neutral boundary is designed to be reused by the planned gRPC server so behavior cannot drift between protocols.
 
 ## Lifecycle concurrency
 

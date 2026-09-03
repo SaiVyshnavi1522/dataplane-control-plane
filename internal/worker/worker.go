@@ -3,27 +3,27 @@ package worker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/example/dataplane-control-plane/internal/metrics"
-	"github.com/example/dataplane-control-plane/internal/model"
-	"github.com/example/dataplane-control-plane/internal/provisioner"
-	"github.com/example/dataplane-control-plane/internal/repository"
+	"github.com/example/dataplane-control-plane/internal/service"
 )
 
 type Worker struct {
-	repo       *repository.Repository
-	prov       provisioner.Provisioner
+	processor  JobProcessor
 	count      int
 	poll       time.Duration
 	maxRetries int
 }
 
-func New(repo *repository.Repository, prov provisioner.Provisioner, count int, poll time.Duration) *Worker {
-	return &Worker{repo: repo, prov: prov, count: count, poll: poll, maxRetries: 3}
+type JobProcessor interface {
+	ProcessNextJob(context.Context, int) (service.JobOutcome, error)
+}
+
+func New(processor JobProcessor, count int, poll time.Duration) *Worker {
+	return &Worker{processor: processor, count: count, poll: poll, maxRetries: 3}
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -43,7 +43,7 @@ func (w *Worker) loop(ctx context.Context, id int) {
 	ticker := time.NewTicker(w.poll)
 	defer ticker.Stop()
 	for {
-		if err := w.processOne(ctx, id); err != nil && !errors.Is(err, repository.ErrNotFound) && !errors.Is(err, context.Canceled) {
+		if err := w.processOne(ctx, id); err != nil && !errors.Is(err, service.ErrNoWork) && !errors.Is(err, context.Canceled) {
 			slog.Error("worker iteration failed", "worker", id, "error", err)
 		}
 		select {
@@ -55,101 +55,16 @@ func (w *Worker) loop(ctx context.Context, id int) {
 }
 
 func (w *Worker) processOne(ctx context.Context, workerID int) error {
-	job, err := w.repo.ClaimJob(ctx)
+	outcome, err := w.processor.ProcessNextJob(ctx, w.maxRetries)
 	if err != nil {
 		return err
 	}
-	started := time.Now()
-	cluster, err := w.repo.GetCluster(ctx, job.ClusterID)
-	if err == nil {
-		err = w.execute(ctx, job, cluster)
-	}
-	metrics.JobDuration.WithLabelValues(string(job.Type)).Observe(time.Since(started).Seconds())
-	if err == nil {
-		metrics.JobsProcessed.WithLabelValues(string(job.Type), "success").Inc()
-		return w.repo.CompleteJob(ctx, job.ID)
-	}
-	metrics.JobsProcessed.WithLabelValues(string(job.Type), "error").Inc()
-	retry, repoErr := w.repo.RetryOrFailJob(ctx, job, err, w.maxRetries)
-	if repoErr != nil {
-		return repoErr
-	}
-	if !retry {
-		if statusErr := w.markClusterFailed(ctx, job, cluster, err); statusErr != nil {
-			return errors.Join(err, statusErr)
-		}
-	}
-	slog.Warn("job failed", "worker", workerID, "job", job.ID, "type", job.Type, "attempt", job.Attempts, "retry", retry, "error", err)
-	return err
-}
-
-func (w *Worker) execute(ctx context.Context, job model.Job, c model.Cluster) error {
-	jobCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
-	defer cancel()
-	switch job.Type {
-	case model.JobProvision:
-		switch c.Status {
-		case model.StatusRequested:
-			if err := w.repo.TransitionClusterStatus(ctx, c.ID, model.StatusRequested, model.StatusProvisioning, ""); err != nil {
-				return err
-			}
-		case model.StatusProvisioning:
-			// A retry resumes the operation from its in-progress state.
-		default:
-			return unexpectedJobState(job, c)
-		}
-		if err := w.prov.Provision(jobCtx, c); err != nil {
-			return err
-		}
-		return w.repo.TransitionClusterStatus(ctx, c.ID, model.StatusProvisioning, model.StatusRunning, "")
-	case model.JobScale:
-		if c.Status != model.StatusScaling {
-			return unexpectedJobState(job, c)
-		}
-		if err := w.prov.Scale(jobCtx, c); err != nil {
-			return err
-		}
-		return w.repo.TransitionClusterStatus(ctx, c.ID, model.StatusScaling, model.StatusRunning, "")
-	case model.JobDelete:
-		if c.Status != model.StatusDeleting {
-			return unexpectedJobState(job, c)
-		}
-		if err := w.prov.Delete(jobCtx, c); err != nil {
-			return err
-		}
-		return w.repo.TransitionClusterStatus(ctx, c.ID, model.StatusDeleting, model.StatusDeleted, "")
-	default:
-		return errors.New("unsupported job type")
-	}
-}
-
-func (w *Worker) markClusterFailed(ctx context.Context, job model.Job, cluster model.Cluster, cause error) error {
-	if cluster.ID == "" {
+	metrics.JobDuration.WithLabelValues(string(outcome.Job.Type)).Observe(time.Since(outcome.StartedAt).Seconds())
+	if outcome.Cause == nil {
+		metrics.JobsProcessed.WithLabelValues(string(outcome.Job.Type), "success").Inc()
 		return nil
 	}
-	var from model.ClusterStatus
-	switch job.Type {
-	case model.JobProvision:
-		from = model.StatusProvisioning
-	case model.JobScale:
-		from = model.StatusScaling
-	case model.JobDelete:
-		from = model.StatusDeleting
-	default:
-		return nil
-	}
-	if err := w.repo.TransitionClusterStatus(ctx, cluster.ID, from, model.StatusFailed, cause.Error()); err != nil {
-		return fmt.Errorf("mark cluster failed: %w", err)
-	}
+	metrics.JobsProcessed.WithLabelValues(string(outcome.Job.Type), "error").Inc()
+	slog.Warn("job failed", "worker", workerID, "job", outcome.Job.ID, "type", outcome.Job.Type, "attempt", outcome.Job.Attempts, "retry", outcome.Retry, "error", outcome.Cause)
 	return nil
-}
-
-func unexpectedJobState(job model.Job, cluster model.Cluster) error {
-	return fmt.Errorf(
-		"%w: %s job %d found cluster in %s state",
-		repository.ErrInvalidTransition,
-		job.Type,
-		job.ID,
-		cluster.Status,
-	)
 }

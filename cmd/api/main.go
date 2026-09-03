@@ -16,6 +16,7 @@ import (
 	"github.com/example/dataplane-control-plane/internal/metrics"
 	"github.com/example/dataplane-control-plane/internal/provisioner"
 	"github.com/example/dataplane-control-plane/internal/repository"
+	"github.com/example/dataplane-control-plane/internal/service"
 	"github.com/example/dataplane-control-plane/internal/worker"
 )
 
@@ -53,12 +54,13 @@ func main() {
 	}
 
 	metrics.Register()
-	workers := worker.New(repo, prov, cfg.Workers, cfg.JobPollInterval)
+	application := service.New(repo, prov)
+	workers := worker.New(application, cfg.Workers, cfg.JobPollInterval)
 	go workers.Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.New(repo).Handler(),
+		Handler:           api.New(application).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

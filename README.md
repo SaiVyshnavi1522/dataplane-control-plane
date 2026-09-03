@@ -24,9 +24,11 @@ The repository demonstrates software-engineering behaviors that are difficult to
 ```mermaid
 flowchart LR
     Client -->|REST| API[Go API]
-    API --> DB[(PostgreSQL)]
+    API --> APP[Application service]
+    APP --> DB[(PostgreSQL)]
     DB --> W[Concurrent worker pool]
-    W --> P{Provisioner}
+    W --> APP
+    APP --> P{Provisioner}
     P -->|mock| Mock[Simulation]
     P -->|kubernetes| K8s[Kubernetes API]
     K8s --> OS[OpenSearch StatefulSet]
@@ -152,6 +154,7 @@ The command prints throughput and p50/p95/p99 request latency. Performance resul
 cmd/api                 API entrypoint
 cmd/loadtest            small concurrent benchmark client
 internal/api            REST handlers + middleware
+internal/service        transport-neutral application use cases
 internal/repository     PostgreSQL lifecycle + job persistence
 internal/worker         concurrent worker pool + retries
 internal/provisioner    mock and Kubernetes implementations

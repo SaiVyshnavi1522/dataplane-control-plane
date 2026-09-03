@@ -25,3 +25,7 @@ SQL migrations are embedded from the top-level `migrations` directory and record
 ## ADR-006: Lifecycle transitions are database invariants
 
 Allowed transitions are explicit in the domain model. Repository updates use expected-state compare-and-set conditions, while scale and delete requests take a row lock around the state change and job insert. PostgreSQL check constraints reject unknown states and job types, and a partial unique index permits only one `PENDING` or `RUNNING` job per cluster. These layers prevent stale workers and concurrent API requests from producing impossible lifecycle states.
+
+## ADR-007: Transport-neutral application service
+
+REST, background workers, and future gRPC handlers call one application service. The service owns request normalization, validation, lifecycle use cases, job execution, and provisioner coordination. HTTP code is limited to decoding, status-code mapping, and encoding; worker code is limited to polling, concurrency, and telemetry. This prevents protocol-specific business rules and makes the core use cases independently verifiable.

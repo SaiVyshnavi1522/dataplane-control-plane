@@ -2,26 +2,33 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/example/dataplane-control-plane/internal/metrics"
-	"github.com/example/dataplane-control-plane/internal/repository"
+	"github.com/example/dataplane-control-plane/internal/model"
+	"github.com/example/dataplane-control-plane/internal/service"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Server struct {
-	repo *repository.Repository
-	mux  *http.ServeMux
+	service ClusterService
+	mux     *http.ServeMux
+}
+
+type ClusterService interface {
+	Ready(context.Context) error
+	CreateCluster(context.Context, service.CreateClusterInput) (model.Cluster, bool, error)
+	ListClusters(context.Context) ([]model.Cluster, error)
+	GetCluster(context.Context, string) (model.Cluster, error)
+	ScaleCluster(context.Context, string, int) (model.Cluster, error)
+	DeleteCluster(context.Context, string) (model.Cluster, error)
 }
 
 type createClusterRequest struct {
@@ -35,10 +42,8 @@ type scaleRequest struct {
 	Nodes int `json:"nodes"`
 }
 
-var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{2,39}$`)
-
-func New(repo *repository.Repository) *Server {
-	s := &Server{repo: repo, mux: http.NewServeMux()}
+func New(application ClusterService) *Server {
+	s := &Server{service: application, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -61,7 +66,7 @@ func (s *Server) routes() {
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	if err := s.repo.Ping(ctx); err != nil {
+	if err := s.service.Ready(ctx); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "database unavailable")
 		return
 	}
@@ -69,29 +74,23 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createCluster(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if key == "" || len(key) > 128 {
-		writeError(w, http.StatusBadRequest, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key header is required and must be <= 128 characters")
-		return
-	}
 	var req createClusterRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	if err := validateCreate(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-		return
-	}
-	cluster, reused, err := s.repo.CreateCluster(r.Context(), repository.CreateClusterInput{
-		ID:             newID(),
+	cluster, reused, err := s.service.CreateCluster(r.Context(), service.CreateClusterInput{
 		Name:           req.Name,
 		Engine:         req.Engine,
 		Version:        req.Version,
-		DesiredNodes:   req.Nodes,
-		IdempotencyKey: key,
+		Nodes:          req.Nodes,
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
 	})
-	if errors.Is(err, repository.ErrIdempotencyConflict) {
+	if errors.Is(err, service.ErrInvalidArgument) {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if errors.Is(err, service.ErrIdempotencyConflict) {
 		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", err.Error())
 		return
 	}
@@ -108,7 +107,7 @@ func (s *Server) createCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listClusters(w http.ResponseWriter, r *http.Request) {
-	clusters, err := s.repo.ListClusters(r.Context())
+	clusters, err := s.service.ListClusters(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not list clusters")
 		return
@@ -117,8 +116,8 @@ func (s *Server) listClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getCluster(w http.ResponseWriter, r *http.Request) {
-	cluster, err := s.repo.GetCluster(r.Context(), r.PathValue("id"))
-	if errors.Is(err, repository.ErrNotFound) {
+	cluster, err := s.service.GetCluster(r.Context(), r.PathValue("id"))
+	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "CLUSTER_NOT_FOUND", "cluster not found")
 		return
 	}
@@ -135,16 +134,16 @@ func (s *Server) scaleCluster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	if req.Nodes < 1 || req.Nodes > 3 {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "nodes must be between 1 and 3")
+	cluster, err := s.service.ScaleCluster(r.Context(), r.PathValue("id"), req.Nodes)
+	if errors.Is(err, service.ErrInvalidArgument) {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	cluster, err := s.repo.RequestScale(r.Context(), r.PathValue("id"), req.Nodes)
-	if errors.Is(err, repository.ErrNotFound) {
+	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "CLUSTER_NOT_FOUND", "cluster not found")
 		return
 	}
-	if errors.Is(err, repository.ErrInvalidTransition) {
+	if errors.Is(err, service.ErrInvalidTransition) {
 		writeError(w, http.StatusConflict, "CLUSTER_STATE_CONFLICT", "cluster cannot be scaled from its current state")
 		return
 	}
@@ -160,12 +159,16 @@ func (s *Server) scaleCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteCluster(w http.ResponseWriter, r *http.Request) {
-	cluster, err := s.repo.RequestDelete(r.Context(), r.PathValue("id"))
-	if errors.Is(err, repository.ErrNotFound) {
+	cluster, err := s.service.DeleteCluster(r.Context(), r.PathValue("id"))
+	if errors.Is(err, service.ErrInvalidArgument) {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if errors.Is(err, service.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "CLUSTER_NOT_FOUND", "cluster not found")
 		return
 	}
-	if errors.Is(err, repository.ErrInvalidTransition) {
+	if errors.Is(err, service.ErrInvalidTransition) {
 		writeError(w, http.StatusConflict, "CLUSTER_STATE_CONFLICT", "cluster cannot be deleted from its current state")
 		return
 	}
@@ -180,32 +183,6 @@ func (s *Server) deleteCluster(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, cluster)
 }
 
-func validateCreate(req *createClusterRequest) error {
-	req.Name = strings.ToLower(strings.TrimSpace(req.Name))
-	if !namePattern.MatchString(req.Name) {
-		return errors.New("name must be 3-40 lowercase letters, numbers, or hyphens and start with a letter")
-	}
-	if req.Engine == "" {
-		req.Engine = "opensearch"
-	}
-	if req.Engine != "opensearch" {
-		return errors.New("only opensearch is supported in v1")
-	}
-	if req.Version == "" {
-		req.Version = "3.8.0"
-	}
-	if req.Version != "3.8.0" {
-		return errors.New("v1 currently supports OpenSearch 3.8.0 only")
-	}
-	if req.Nodes == 0 {
-		req.Nodes = 1
-	}
-	if req.Nodes < 1 || req.Nodes > 3 {
-		return errors.New("nodes must be between 1 and 3")
-	}
-	return nil
-}
-
 func decodeJSON(r *http.Request, dst any) error {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
@@ -213,14 +190,6 @@ func decodeJSON(r *http.Request, dst any) error {
 		return errors.New("invalid JSON request")
 	}
 	return nil
-}
-
-func newID() string {
-	b := make([]byte, 12)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(b)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
