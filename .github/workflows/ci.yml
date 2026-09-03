@@ -28,11 +28,19 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: '3.20.3'
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install protoc 3.20.3
+        shell: bash
+        run: |
+          PROTOC_ARCHIVE="${RUNNER_TEMP}/protoc-3.20.3.zip"
+          PROTOC_ROOT="${RUNNER_TEMP}/protoc-3.20.3"
+          curl --fail --location --retry 3 \
+            https://github.com/protocolbuffers/protobuf/releases/download/v3.20.3/protoc-3.20.3-linux-x86_64.zip \
+            --output "${PROTOC_ARCHIVE}"
+          echo '44a6b498e996b845edef83864734c0e52f42197e85c9d567af55f4e3ff09d755  '"${PROTOC_ARCHIVE}" | sha256sum --check
+          unzip -q "${PROTOC_ARCHIVE}" -d "${PROTOC_ROOT}"
+          sudo install -m 0755 "${PROTOC_ROOT}/bin/protoc" /usr/local/bin/protoc
+          sudo cp -R "${PROTOC_ROOT}/include/." /usr/local/include/
+          protoc --version
       - name: Generate protobuf API
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
