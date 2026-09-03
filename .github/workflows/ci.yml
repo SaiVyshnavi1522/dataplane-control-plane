@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: dataplane
+          POSTGRES_PASSWORD: dataplane
+          POSTGRES_DB: dataplane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dataplane -d dataplane"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://dataplane:dataplane@localhost:5432/dataplane?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.x'
+          cache: true
+      - name: Format check
+        run: |
+          go fmt ./...
+          git diff --exit-code
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -cover ./...
+      - name: Build
+        run: go build ./cmd/api

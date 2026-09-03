@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.vscode
+.env
+.DS_Store
+coverage.out
+bin
+docs
+deploy
+scripts
+*.md

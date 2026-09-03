@@ -1,0 +1,11 @@
+{
+  "title": "DataPlane Control Plane",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {"type":"timeseries","title":"HTTP Request Rate","targets":[{"expr":"sum(rate(dataplane_http_requests_total[1m])) by (route)"}],"gridPos":{"x":0,"y":0,"w":12,"h":8}},
+    {"type":"timeseries","title":"P95 API Latency","targets":[{"expr":"histogram_quantile(0.95, sum(rate(dataplane_http_request_duration_seconds_bucket[5m])) by (le, route))"}],"gridPos":{"x":12,"y":0,"w":12,"h":8}},
+    {"type":"timeseries","title":"Jobs by Outcome","targets":[{"expr":"sum(rate(dataplane_jobs_processed_total[5m])) by (type, outcome)"}],"gridPos":{"x":0,"y":8,"w":24,"h":8}}
+  ]
+}
